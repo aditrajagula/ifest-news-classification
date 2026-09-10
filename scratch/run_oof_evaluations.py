@@ -1,0 +1,174 @@
+import sys
+import os
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import HistGradientBoostingClassifier, ExtraTreesClassifier
+from sklearn.metrics import f1_score, classification_report
+import xgboost as xgb
+
+sys.stdout.reconfigure(encoding='utf-8')
+SEED = 42
+
+print("=== Loading features ===")
+train = pd.read_csv('train.csv')
+y_train = train['label'].values
+
+cache = np.load(r'C:\Users\Reynaldi Hutagaol\.gemini\antigravity-ide\brain\489beaa2-e2ba-4370-a4e6-0110f42de593\scratch\features_cache.npz')
+X_base_tr = cache['X_train'] # 42 features
+X_base_te = cache['X_test']
+
+extra = np.load('scratch/extra_features.npz')
+city_tr = extra['city_tr'] # 1 feature
+city_te = extra['city_te']
+ner_tr = extra['ner_tr']   # 4 features
+ner_te = extra['ner_te']
+
+feature_sets = {
+    'Baseline (42 Fitur)': (X_base_tr, X_base_te),
+    '+City-Level Conflict (43 Fitur)': (np.hstack([X_base_tr, city_tr]), np.hstack([X_base_te, city_te])),
+    '+Dynamic NER (46 Fitur)': (np.hstack([X_base_tr, ner_tr]), np.hstack([X_base_te, ner_te])),
+    'Kombinasi Final (+City +NER -> 47 Fitur)': (np.hstack([X_base_tr, city_tr, ner_tr]), np.hstack([X_base_te, city_te, ner_te]))
+}
+
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+sample_weights = np.where(y_train == 0, 3.5, 1.0) # Standard 3.5 weight
+
+results = []
+models_oof_dict = {}
+
+for name, (X_tr, X_te) in feature_sets.items():
+    print(f"\n--- Running 5-Fold CV for: {name} (dim={X_tr.shape[1]}) ---")
+    scaler = StandardScaler()
+    X_tr_sc = scaler.fit_transform(X_tr)
+    X_te_sc = scaler.transform(X_te)
+    
+    xgb_oof = np.zeros(len(y_train))
+    hgb_oof = np.zeros(len(y_train))
+    et_oof  = np.zeros(len(y_train))
+    lr_oof  = np.zeros(len(y_train))
+    
+    xgb_te = np.zeros(len(X_te))
+    hgb_te = np.zeros(len(X_te))
+    et_te  = np.zeros(len(X_te))
+    lr_te  = np.zeros(len(X_te))
+    
+    for trn, val in skf.split(X_tr, y_train):
+        clf_xgb = xgb.XGBClassifier(n_estimators=400, max_depth=5, learning_rate=0.035, subsample=0.8, colsample_bytree=0.8, random_state=SEED, eval_metric='logloss', n_jobs=4)
+        clf_xgb.fit(X_tr[trn], y_train[trn], sample_weight=sample_weights[trn])
+        xgb_oof[val] = clf_xgb.predict_proba(X_tr[val])[:, 1]
+        xgb_te += clf_xgb.predict_proba(X_te)[:, 1] / 5.0
+        
+        clf_hgb = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.035, max_depth=6, random_state=SEED)
+        clf_hgb.fit(X_tr[trn], y_train[trn], sample_weight=sample_weights[trn])
+        hgb_oof[val] = clf_hgb.predict_proba(X_tr[val])[:, 1]
+        hgb_te += clf_hgb.predict_proba(X_te)[:, 1] / 5.0
+        
+        clf_et = ExtraTreesClassifier(n_estimators=250, max_depth=12, random_state=SEED, n_jobs=4)
+        clf_et.fit(X_tr[trn], y_train[trn], sample_weight=sample_weights[trn])
+        et_oof[val] = clf_et.predict_proba(X_tr[val])[:, 1]
+        et_te += clf_et.predict_proba(X_te)[:, 1] / 5.0
+        
+        clf_lr = LogisticRegression(C=0.5, max_iter=1000, random_state=SEED)
+        clf_lr.fit(X_tr_sc[trn], y_train[trn], sample_weight=sample_weights[trn])
+        lr_oof[val] = clf_lr.predict_proba(X_tr_sc[val])[:, 1]
+        lr_te += clf_lr.predict_proba(X_te_sc)[:, 1] / 5.0
+
+    meta_X = np.column_stack([xgb_oof, hgb_oof, et_oof, lr_oof])
+    meta_X_te = np.column_stack([xgb_te, hgb_te, et_te, lr_te])
+    
+    meta_oof = np.zeros(len(y_train))
+    meta_test = np.zeros(len(X_te))
+    fold_ths = []
+    
+    for trn, val in skf.split(meta_X, y_train):
+        meta_clf = LogisticRegression(C=1.0, random_state=SEED)
+        meta_clf.fit(meta_X[trn], y_train[trn])
+        val_probs = meta_clf.predict_proba(meta_X[val])[:, 1]
+        meta_oof[val] = val_probs
+        meta_test += meta_clf.predict_proba(meta_X_te)[:, 1] / 5.0
+        
+        f_th, f_f1 = 0.810, 0.0
+        for th in np.arange(0.750, 0.835, 0.005):
+            sc = f1_score(y_train[val], (val_probs >= th).astype(int), average='macro')
+            if sc > f_f1:
+                f_f1 = sc
+                f_th = th
+        fold_ths.append(round(float(f_th), 3))
+        
+    cons_th = round(float(np.median(fold_ths)), 3)
+    oof_preds = (meta_oof >= cons_th).astype(int)
+    macro_f1 = f1_score(y_train, oof_preds, average='macro')
+    cr = classification_report(y_train, oof_preds, output_dict=True)
+    
+    # Save OOF for gating analysis
+    models_oof_dict[name] = (meta_oof, meta_test, cons_th, macro_f1)
+    
+    print(f"[{name}] Folds={fold_ths} | Cons_Th={cons_th} | Macro F1={macro_f1:.4f} | Rec_0={cr['0']['recall']:.4f} | Prec_0={cr['0']['precision']:.4f}")
+    results.append({
+        'Model / Fitur': name,
+        'Dimensi': X_tr.shape[1],
+        'Consensus_Th': cons_th,
+        'Macro F1': round(macro_f1, 4),
+        'Class 0 Recall': round(cr['0']['recall'], 4),
+        'Class 0 Precision': round(cr['0']['precision'], 4),
+        'Class 0 F1': round(cr['0']['f1-score'], 4)
+    })
+
+print("\n" + "="*80)
+print("=== TABEL PERBANDINGAN OOF FITUR (TUGAS 4 & 5) ===")
+print("="*80)
+df_res = pd.DataFrame(results)
+print(df_res.to_string(index=False))
+
+# --- TUGAS 3: Precision Gating Dual-Threshold Evaluation ---
+print("\n" + "="*80)
+print("=== EVALUASI PRECISION GATING DUAL-THRESHOLD (TUGAS 3) ===")
+print("="*80)
+
+# Pick best model oof
+best_name = df_res.sort_values('Macro F1', ascending=False).iloc[0]['Model / Fitur']
+best_meta_oof, best_meta_test, eval_th, eval_macro_f1 = models_oof_dict[best_name]
+
+# Construct row_conflict from X_base_tr
+# Indices in X_base_tr:
+# 18: loc_conflict, 21: fig_conflict, 22: inst_mismatch, 30: neg_inversion, 34: antonym_conflict
+loc_conf = X_base_tr[:, 18]
+fig_conf = X_base_tr[:, 21]
+inst_mis = X_base_tr[:, 22]
+neg_inv  = X_base_tr[:, 30]
+ant_conf = X_base_tr[:, 34]
+
+row_conflict = ((loc_conf == 1) | (fig_conf == 1) | (inst_mis == 1) | (neg_inv == 1) | (ant_conf == 1))
+print(f"Row conflicts count: {row_conflict.sum()} ({row_conflict.mean()*100:.2f}%)")
+
+best_th_clean, best_th_conf, best_gate_f1 = 0.5, 0.5, 0.0
+for th_cl in np.arange(0.65, 0.80, 0.005):
+    for th_cf in np.arange(0.75, 0.90, 0.005):
+        preds = np.where(row_conflict, (best_meta_oof >= th_cf).astype(int), (best_meta_oof >= th_cl).astype(int))
+        sc = f1_score(y_train, preds, average='macro')
+        if sc > best_gate_f1:
+            best_gate_f1, best_th_clean, best_th_conf = sc, th_cl, th_cf
+
+print(f"Single-Threshold OOF ({best_name}) : Th={eval_th:.3f} | Macro F1 = {eval_macro_f1:.4f}")
+print(f"Dual-Threshold Gating OOF            : Th_clean={best_th_clean:.3f}, Th_conf={best_th_conf:.3f} | Macro F1 = {best_gate_f1:.4f}")
+delta_gating = best_gate_f1 - eval_macro_f1
+print(f"Delta F1 (Gating vs Single)          : {delta_gating:+.4f}")
+
+use_gating = best_gate_f1 > eval_macro_f1
+print(f"Keputusan Adopsi Gating di Submission: {'DITERIMA (Gating dipakai di test set)' if use_gating else 'DITOLAK (Tetap pakai Single Threshold)'}")
+
+# Save full evaluation summary
+np.savez('scratch/final_evaluation_results.npz',
+         best_meta_oof=best_meta_oof,
+         best_meta_test=best_meta_test,
+         eval_th=eval_th,
+         eval_macro_f1=eval_macro_f1,
+         best_th_clean=best_th_clean,
+         best_th_conf=best_th_conf,
+         best_gate_f1=best_gate_f1,
+         use_gating=use_gating,
+         best_name=best_name)
+print("Saved final evaluation results to scratch/final_evaluation_results.npz")
