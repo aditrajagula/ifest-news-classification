@@ -1,0 +1,58 @@
+{
+  "baseline_46_def_th": 0.5900000000000003,
+  "baseline_46_def_f1": 0.8911974628298953,
+  "best_params": {
+    "xgb": {
+      "n_estimators": 550,
+      "max_depth": 3,
+      "learning_rate": 0.016014316489551022,
+      "subsample": 0.6,
+      "colsample_bytree": 0.6,
+      "min_child_weight": 4,
+      "reg_lambda": 0.12569828566858568
+    },
+    "hgb": {
+      "max_iter": 450,
+      "learning_rate": 0.04314623120358049,
+      "max_depth": 5,
+      "l2_regularization": 0.10211938143560412,
+      "max_leaf_nodes": 48
+    },
+    "et": {
+      "n_estimators": 200,
+      "max_depth": 18,
+      "min_samples_split": 8,
+      "min_samples_leaf": 2,
+      "max_features": 0.6
+    },
+    "lr": {
+      "C": 4.295400261870456,
+      "penalty": "l1"
+    }
+  },
+  "best_individual_f1": {
+    "xgb": 0.8910440235270509,
+    "hgb": 0.8914674181164586,
+    "et": 0.8868523892004686,
+    "lr": 0.886852186445096
+  },
+  "study_times": {
+    "xgb": 1210.1467594999995,
+    "hgb": 2881.500125199993,
+    "et": 1095.6677502999955,
+    "lr": 4043.749774099997
+  },
+  "total_hpo_time": 9231.064409099985,
+  "final_single_th": 0.5750000000000002,
+  "final_single_f1": 0.8913784670352177,
+  "final_gated_th_clean": 0.6100000000000001,
+  "final_gated_th_conf": 0.65,
+  "final_gated_f1": 0.8913339797774547,
+  "final_c0_recall": 0.6938065414057063,
+  "final_c0_precision": 0.9486203615604186,
+  "final_c0_f1": 0.8014469453376206,
+  "seed43_f1": 0.8916722029515738,
+  "seed43_delta": 0.0003382231741191344,
+  "test_c0_count": 240,
+  "test_c1_count": 3363
+}
